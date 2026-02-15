@@ -257,7 +257,7 @@ def render_header(page_title="VTuberまとめのまとめ | 最新ニュース�
 <script async src="https://www.googletagmanager.com/gtag/js?id=G-SJ6FD6ZGJE"></script>
 <script>
   window.dataLayer = window.dataLayer || [];
-  function gtag(){dataLayer.push(arguments);}
+  function gtag(){{dataLayer.push(arguments);}}
   gtag('js', new Date());
   gtag('config', 'G-SJ6FD6ZGJE');
 </script>
