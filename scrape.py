@@ -93,6 +93,10 @@ def fetch_html(url):
             print(f"🌐 取得中 (試行 {attempt + 1}/{MAX_RETRIES}): {url}")
             response = requests.get(url, headers=headers, timeout=30)
             response.raise_for_status()
+            
+            # 文字エンコーディングを明示的にUTF-8に設定
+            response.encoding = 'utf-8'
+            
             print(f"✅ 取得成功: {len(response.text)} bytes")
             return response.text
         except requests.exceptions.Timeout:
