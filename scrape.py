@@ -229,24 +229,46 @@ def render_header(page_title="VTuberまとめのまとめ | 最新ニュース�
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="description" content="VTuberまとめサイトの最新情報を一括チェック。にじホロ速、やらおん等の人気サイトから2時間ごとに自動収集。">
-<meta name="keywords" content="VTuber,まとめ,にじさんじ,ホロライブ,最新ニュース,やらおん,にじホロ速">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="description" content="VTuber・にじさんじ・ホロライブの最新まとめ記事を2時間ごとに自動更新。にじホロ速、やらおん、Vtuberまとめるよ～ん等の人気サイトから厳選。">
+<meta name="keywords" content="VTuber,まとめ,にじさんじ,ホロライブ,やらおん,にじホロ速,最新ニュース,速報,Vtuberまとめるよ～ん,Vtuberまとめ部,VTuberNews">
 <title>{page_title}</title>
+
+<!-- CSS -->
 <link rel="stylesheet" href="/style.css">
-<link rel="canonical" href="https://3457457547.github.io/vtuber-news-aggregator/">
+<link rel="canonical" href="https://vtuber-matome.net/">
+
+<!-- OGP -->
 <meta property="og:title" content="VTuberまとめのまとめ">
-<meta property="og:description" content="VTuber関連の最新まとめ記事を一括チェック">
+<meta property="og:description" content="VTuber・にじさんじ・ホロライブの最新まとめを2時間ごとに更新">
 <meta property="og:type" content="website">
-<meta property="og:url" content="https://3457457547.github.io/vtuber-news-aggregator/">
-<meta name="twitter:card" content="summary">
+<meta property="og:url" content="https://vtuber-matome.net/">
+<meta property="og:site_name" content="VTuberまとめのまとめ">
+
+<!-- Twitter Card -->
+<meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="VTuberまとめのまとめ">
+<meta name="twitter:description" content="VTuber・にじさんじ・ホロライブの最新まとめを2時間ごとに更新">
+
+<!-- テーマカラー -->
+<meta name="theme-color" content="#ff6b6b">
+
+<!-- Google Analytics -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-SJ6FD6ZGJE"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'G-SJ6FD6ZGJE');
+</script>
 </head>
 <body>
 <header>
 <div class="container">
+<div>
 <h1>📰 VTuberまとめのまとめ</h1>
-<p class="subtitle">人気VTuberまとめサイトの最新情報を2時間ごとに更新</p>
+<p class="subtitle">人気VTuberまとめサイトの最新情報を2時間ごとに自動更新</p>
+</div>
 </div>
 </header>
 <main class="container">"""
