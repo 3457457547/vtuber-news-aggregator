@@ -2,24 +2,22 @@ name: Update VTuber News
 
 on:
   schedule:
-    # 2時間ごとに実行（UTC時刻）
     - cron: '0 */2 * * *'
-  workflow_dispatch:  # 手動実行用
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
 
 jobs:
   update:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     
-    permissions:
-      contents: write  # pushに必要
-    
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
-      with:
-        token: ${{ secrets.GITHUB_TOKEN }}
-        fetch-depth: 0
     
     - name: Setup Python
       uses: actions/setup-python@v5
@@ -41,15 +39,19 @@ jobs:
         git config user.name "vtuber-bot"
         git config user.email "bot@github-actions.com"
     
-    - name: Commit and push changes
+    - name: Commit changes
       run: |
-        git add public/ cache/scraped_data.json
-        
-        # 変更があるかチェック
-        if git diff --staged --quiet; then
-          echo "✅ 変更なし"
-        else
-          git commit -m "🤖 Auto update: $(date -u +'%Y-%m-%d %H:%M') UTC"
+        git add cache/scraped_data.json
+        if ! git diff --staged --quiet; then
+          git commit -m "🤖 Update cache: $(date -u +'%Y-%m-%d %H:%M') UTC"
           git push
-          echo "✅ 更新完了"
         fi
+    
+    - name: Upload artifact
+      uses: actions/upload-pages-artifact@v3
+      with:
+        path: 'public'
+    
+    - name: Deploy to GitHub Pages
+      id: deployment
+      uses: actions/deploy-pages@v4
