@@ -728,27 +728,31 @@ def generate_robots_txt():
     return """User-agent: *
 Allow: /
 
-Sitemap: https://3457457547.github.io/vtuber-news-aggregator/sitemap.xml
+Sitemap: https://vtuber-matome.net/sitemap.xml
 """
 
 def generate_sitemap(items):
-    """sitemap.xml生成"""
+    """sitemap.xml生成（SEO）"""
     sitemap = '<?xml version="1.0" encoding="UTF-8"?>\n'
     sitemap += '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+    
+    # トップページ
     sitemap += '  <url>\n'
-    sitemap += '    <loc>https://3457457547.github.io/vtuber-news-aggregator/</loc>\n'
+    sitemap += '    <loc>https://vtuber-matome.net/</loc>\n'
     sitemap += '    <changefreq>hourly</changefreq>\n'
     sitemap += '    <priority>1.0</priority>\n'
     sitemap += '  </url>\n'
     
+    # 2ページ目
     if len(items) > ITEMS_PER_PAGE:
         sitemap += '  <url>\n'
-        sitemap += '    <loc>https://3457457547.github.io/vtuber-news-aggregator/page2.html</loc>\n'
+        sitemap += '    <loc>https://vtuber-matome.net/page2.html</loc>\n'
         sitemap += '    <changefreq>daily</changefreq>\n'
         sitemap += '    <priority>0.8</priority>\n'
         sitemap += '  </url>\n'
     
     sitemap += '</urlset>'
+    
     return sitemap
 
 def write_files(items):
