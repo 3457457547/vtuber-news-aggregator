@@ -1,3 +1,3 @@
-requests==2.31.0
-beautifulsoup4==4.12.3
-lxml==5.1.0
+# 新人VTuber発掘サイト
+# 標準ライブラリのみ使用のため、追加パッケージは不要
+# （YouTube API, ChatGPT API は urllib で直接呼び出し）
