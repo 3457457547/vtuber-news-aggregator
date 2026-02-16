@@ -1,828 +1,1232 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
-VTuber News Aggregator - Scraper & HTML Generator
-取得先: https://vtuber.atodeyo.com/
-対象サイト: にじホロ速, Vtuberまとめるよ～ん, Vtuberまとめ部！, VTuberNews, やらおん！
+新人VTuber発掘サイト - メインスクリプト
+YouTube Data API v3 を使って新人VTuberを自動発掘し、
+静的HTMLサイトを生成する。
+
+フロー:
+  1. YouTube API で新人VTuber候補を検索
+  2. フィルタリング（登録者数・開設日・アクティブ度）
+  3. 候補リストをJSONキャッシュに保存
+  4. 承認済みVTuberの紹介ページをHTML生成
+  5. Git push → GitHub Pages で自動デプロイ
 """
 
-import requests
-from bs4 import BeautifulSoup
-import json
-from datetime import datetime, timezone
-from pathlib import Path
-import time
+import os
 import sys
+import json
+import re
+import math
+import hashlib
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from urllib.request import Request, urlopen
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode, quote
 
-# ==================== 設定 ====================
+# ============================================================
+# 設定
+# ============================================================
 
-BASE_URL = "https://vtuber.atodeyo.com/"
-OUTPUT_DIR = Path("public")
-CACHE_FILE = Path("cache/scraped_data.json")
+YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY", "")
+YOUTUBE_API_BASE = "https://www.googleapis.com/youtube/v3"
 
-# 取得対象サイト（クラス名 → サイト名のマッピング）
-ALLOWED_SITES = {
-    "nhkecr27": "にじホロ速",
-    "vemogu23": "Vtuberまとめるよ～ん",
-    "vemgco19": "Vtuberまとめ部！",
-    "vejwsu12": "VTuberNews",
-    "yocgca13": "やらおん！"
-}
+# 検索キーワード
+SEARCH_QUERIES = [
+    "新人VTuber",
+    "VTuberデビュー",
+    "初配信 VTuber",
+    "個人勢VTuber デビュー",
+    "新人Vtuber 自己紹介",
+]
 
-# 除外するクラス（PR記事など）
-EXCLUDED_CLASSES = ["pr"]
+# フィルタリング条件
+MAX_SUBSCRIBERS = 1000        # 登録者数上限
+MAX_CHANNEL_AGE_DAYS = 90     # チャンネル開設からの日数上限
+MIN_VIDEOS = 3                # 最低動画数
+MAX_DAYS_SINCE_LAST_VIDEO = 30  # 最終投稿からの日数上限
 
-# 記事保持数・ページネーション
-MAX_ITEMS = 100
-ITEMS_PER_PAGE = 50
+# VTuber判定キーワード（チャンネル名 or 説明文に含まれるか）
+VTUBER_KEYWORDS = [
+    "vtuber", "ブイチューバー", "Vチューバー",
+    "バーチャル", "virtual", "ママ", "パパ",
+    "Live2D", "live2d", "配信者", "ゲーム実況",
+    "歌ってみた", "初配信", "デビュー",
+]
 
-# リトライ設定
-MAX_RETRIES = 3
-RETRY_DELAY = 5
+# 出力設定
+SITE_NAME = "新人VTuber発掘所"
+SITE_TAGLINE = "あなたの推しになる新人、ここで見つかる"
+SITE_URL = "https://vtuber-matome.net"
+ITEMS_PER_PAGE = 20
 
-# ==================== ユーティリティ関数 ====================
+# ディレクトリ
+CACHE_DIR = Path("cache")
+PUBLIC_DIR = Path("public")
+CANDIDATES_FILE = CACHE_DIR / "candidates.json"
+APPROVED_FILE = CACHE_DIR / "approved.json"
+
+# ChatGPT API（オプション、未設定ならスキップ）
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+OPENAI_MODEL = "gpt-4o-mini"
+
+# ============================================================
+# ユーティリティ
+# ============================================================
 
 def ensure_dirs():
     """必要なディレクトリを作成"""
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    print("✅ ディレクトリ確認完了")
+    CACHE_DIR.mkdir(exist_ok=True)
+    PUBLIC_DIR.mkdir(exist_ok=True)
 
-def load_cache():
-    """キャッシュファイルから過去の記事データを読み込み"""
-    if CACHE_FILE.exists():
-        try:
-            data = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
-            print(f"📦 キャッシュ読み込み: {len(data)}件")
-            return data
-        except (json.JSONDecodeError, UnicodeDecodeError) as e:
-            print(f"⚠️ キャッシュ破損（{e}）、新規作成します")
-            return []
-    else:
-        print("📦 キャッシュなし、新規作成します")
-        return []
 
-def save_cache(items):
-    """キャッシュファイルに記事データを保存（原子的書き込み）"""
-    temp_file = CACHE_FILE.with_suffix('.tmp')
+def load_json(path: Path, default=None):
+    """JSONファイルを読み込む"""
+    if path.exists():
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return default if default is not None else []
+
+
+def save_json(path: Path, data):
+    """JSONファイルに保存"""
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def api_request(endpoint: str, params: dict) -> dict:
+    """YouTube Data API にリクエストを送る"""
+    params["key"] = YOUTUBE_API_KEY
+    url = f"{YOUTUBE_API_BASE}/{endpoint}?{urlencode(params)}"
+    req = Request(url, headers={"Accept": "application/json"})
     try:
-        temp_file.write_text(
-            json.dumps(items, ensure_ascii=False, indent=2),
-            encoding="utf-8"
-        )
-        temp_file.replace(CACHE_FILE)
-        print(f"💾 キャッシュ保存: {len(items)}件")
-    except Exception as e:
-        print(f"❌ キャッシュ保存失敗: {e}")
-        if temp_file.exists():
-            temp_file.unlink()
+        with urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except HTTPError as e:
+        print(f"[ERROR] YouTube API {endpoint}: {e.code} {e.reason}")
+        if e.code == 403:
+            print("[ERROR] APIクォータ超過の可能性があります")
+        return {}
+    except URLError as e:
+        print(f"[ERROR] Network error: {e}")
+        return {}
 
-def fetch_html(url):
-    """HTMLを取得（リトライ付き）"""
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Connection": "keep-alive",
-        "Upgrade-Insecure-Requests": "1"
-    }
-    
-    for attempt in range(MAX_RETRIES):
-        try:
-            print(f"🌐 取得中 (試行 {attempt + 1}/{MAX_RETRIES}): {url}")
-            response = requests.get(url, headers=headers, timeout=30)
-            response.raise_for_status()
-            
-            # 文字エンコーディングを明示的にUTF-8に設定
-            response.encoding = 'utf-8'
-            
-            print(f"✅ 取得成功: {len(response.text)} bytes")
-            return response.text
-        except requests.exceptions.Timeout:
-            print(f"⏱️ タイムアウト (試行 {attempt + 1}/{MAX_RETRIES})")
-        except requests.exceptions.RequestException as e:
-            print(f"⚠️ 取得エラー: {e}")
-        
-        if attempt < MAX_RETRIES - 1:
-            wait_time = RETRY_DELAY * (attempt + 1)
-            print(f"⏳ {wait_time}秒待機してリトライ...")
-            time.sleep(wait_time)
-    
-    print("❌ すべてのリトライが失敗しました")
-    return None
 
-def parse_timeline(html):
-    """HTMLから記事情報を抽出"""
-    if not html:
-        return []
-    
-    try:
-        soup = BeautifulSoup(html, "html.parser")
-        timeline = soup.select_one(".timeline")
-        
-        if not timeline:
-            print("⚠️ .timeline要素が見つかりません（HTML構造が変更された可能性）")
-            return []
-        
-        items = []
-        children = timeline.find_all('div', recursive=False)
-        print(f"🔍 {len(children)}件の要素を検出")
-        
-        for idx, child in enumerate(children):
-            try:
-                classes = child.get('class', [])
-                if not classes:
-                    continue
-                
-                site_class = classes[0]
-                
-                if site_class in EXCLUDED_CLASSES:
-                    continue
-                
-                if site_class not in ALLOWED_SITES:
-                    continue
-                
-                time_p = child.find('p', class_='time')
-                article_p = child.find('p', class_='article')
-                site_p = child.find('p', class_='site')
-                
-                if not article_p:
-                    continue
-                
-                article_a = article_p.find('a')
-                if not article_a:
-                    continue
-                
-                title = article_a.get_text(strip=True)
-                href = article_a.get('href', '')
-                time_text = time_p.get_text(strip=True) if time_p else ''
-                
-                site_name = ALLOWED_SITES.get(site_class, site_class)
-                
-                if not href or not title:
-                    continue
-                
-                if href.startswith('/'):
-                    href = BASE_URL.rstrip('/') + href
-                elif not href.startswith('http'):
-                    continue
-                
-                item = {
-                    "title": title[:200],
-                    "url": href,
-                    "site": site_name,
-                    "site_class": site_class,
-                    "time_text": time_text[:50],
-                    "fetched_at": datetime.now(timezone.utc).isoformat(),
-                    "id": abs(hash(href))
-                }
-                
-                items.append(item)
-                
-            except Exception as e:
-                print(f"⚠️ 要素{idx}のパースエラー: {e}")
-                continue
-        
-        print(f"✅ {len(items)}件の記事を抽出（対象サイトのみ）")
-        
-        site_counts = {}
-        for item in items:
-            site = item['site']
-            site_counts[site] = site_counts.get(site, 0) + 1
-        
-        for site, count in site_counts.items():
-            print(f"   - {site}: {count}件")
-        
-        return items
-        
-    except Exception as e:
-        print(f"❌ HTML解析エラー: {e}")
-        import traceback
-        traceback.print_exc()
-        return []
+def parse_iso8601(date_str: str) -> datetime:
+    """ISO8601日付をパース"""
+    # Python 3.11+ の fromisoformat で対応
+    date_str = date_str.replace("Z", "+00:00")
+    return datetime.fromisoformat(date_str)
 
-def dedupe_and_merge(old_items, new_items):
-    """新旧記事をマージし、重複を削除"""
-    existing_ids = {item.get("id") for item in old_items if "id" in item}
-    
-    unique_new = [
-        item for item in new_items 
-        if item.get("id") not in existing_ids
-    ]
-    
-    print(f"🆕 新規記事: {len(unique_new)}件")
-    
-    merged = unique_new + old_items
-    trimmed = merged[:MAX_ITEMS]
-    
-    if len(merged) > MAX_ITEMS:
-        print(f"✂️ {len(merged) - MAX_ITEMS}件を削除（上限{MAX_ITEMS}件）")
-    
-    return trimmed
 
-# ==================== HTML生成 ====================
-
-def render_header(page_title="VTuberまとめのまとめ | 最新ニュース一覧"):
-    """HTMLヘッダー（共通）"""
-    return f"""<!DOCTYPE html>
-<html lang="ja">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="description" content="VTuber・にじさんじ・ホロライブの最新まとめ記事を2時間ごとに自動更新。にじホロ速、やらおん、Vtuberまとめるよ～ん等の人気サイトから厳選。">
-<meta name="keywords" content="VTuber,まとめ,にじさんじ,ホロライブ,やらおん,にじホロ速,最新ニュース,速報,Vtuberまとめるよ～ん,Vtuberまとめ部,VTuberNews">
-<title>{page_title}</title>
-
-<!-- CSS -->
-<link rel="stylesheet" href="/style.css">
-<link rel="canonical" href="https://vtuber-matome.net/">
-
-<!-- OGP -->
-<meta property="og:title" content="VTuberまとめのまとめ">
-<meta property="og:description" content="VTuber・にじさんじ・ホロライブの最新まとめを2時間ごとに更新">
-<meta property="og:type" content="website">
-<meta property="og:url" content="https://vtuber-matome.net/">
-<meta property="og:site_name" content="VTuberまとめのまとめ">
-
-<!-- Twitter Card -->
-<meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="VTuberまとめのまとめ">
-<meta name="twitter:description" content="VTuber・にじさんじ・ホロライブの最新まとめを2時間ごとに更新">
-
-<!-- テーマカラー -->
-<meta name="theme-color" content="#ff6b6b">
-
-<!-- Google Analytics -->
-<script async src="https://www.googletagmanager.com/gtag/js?id=G-SJ6FD6ZGJE"></script>
-<script>
-  window.dataLayer = window.dataLayer || [];
-  function gtag(){{dataLayer.push(arguments);}}
-  gtag('js', new Date());
-  gtag('config', 'G-SJ6FD6ZGJE');
-</script>
-</head>
-<body>
-<header>
-<div class="container">
-<div>
-<h1>📰 VTuberまとめのまとめ</h1>
-<p class="subtitle">人気VTuberまとめサイトの最新情報を2時間ごとに自動更新</p>
-</div>
-</div>
-</header>
-<main class="container">"""
-
-def render_footer():
-    """HTMLフッター（共通）"""
+def days_ago(date_str: str) -> int:
+    """指定日付から今日までの日数"""
+    dt = parse_iso8601(date_str)
     now = datetime.now(timezone.utc)
-    return f"""
-</main>
-<footer class="site-footer">
-<div class="container">
-<p>&copy; 2024 VTuberまとめのまとめ | 最終更新: {now.strftime('%Y-%m-%d %H:%M')} UTC</p>
-<p class="sources">情報元: {", ".join(ALLOWED_SITES.values())}</p>
-</div>
-</footer>
-</body>
-</html>"""
+    return (now - dt).days
 
-def render_article(item):
-    """記事カードHTML"""
-    return f"""<article class="post">
-<time>{item.get('time_text', '')}</time>
-<h2><a href="{item['url']}" target="_blank" rel="noopener noreferrer">{item['title']}</a></h2>
-<p class="source">{item['site']}</p>
-</article>
-"""
 
-def render_ad_block():
-    """広告ブロック"""
-    return """<div class="ad-block">
-<!-- nend広告コードをここに挿入 -->
-<p style="color:#999;font-size:0.9rem;">広告エリア（nend審査通過後に表示）</p>
-</div>
-"""
+def format_subscriber_count(count: int) -> str:
+    """登録者数を読みやすい形式に"""
+    if count >= 10000:
+        return f"{count / 10000:.1f}万人"
+    elif count >= 1000:
+        return f"{count / 1000:.1f}千人"
+    return f"{count}人"
 
-def render_index(items):
-    """トップページHTML生成"""
-    html = render_header()
-    html += '<div class="list">\n'
-    
-    for i, item in enumerate(items[:ITEMS_PER_PAGE]):
-        html += render_article(item)
-        if (i + 1) % 10 == 0 and i < ITEMS_PER_PAGE - 1:
-            html += render_ad_block()
-    
-    html += '</div>\n'
-    
-    if len(items) > ITEMS_PER_PAGE:
-        html += '<nav class="pager"><a href="/page2.html">過去の記事 →</a></nav>\n'
-    
-    html += render_footer()
-    return html
 
-def render_page2(items):
-    """2ページ目HTML生成"""
-    html = render_header(page_title="過去の記事 - VTuberまとめのまとめ")
-    html += '<div class="list">\n'
-    
-    page2_items = items[ITEMS_PER_PAGE:ITEMS_PER_PAGE * 2]
-    
-    for i, item in enumerate(page2_items):
-        html += render_article(item)
-        if (i + 1) % 10 == 0 and i < len(page2_items) - 1:
-            html += render_ad_block()
-    
-    html += '</div>\n'
-    html += '<nav class="pager"><a href="/index.html">← 最新記事へ</a></nav>\n'
-    html += render_footer()
-    return html
+def format_date_jp(date_str: str) -> str:
+    """日付を日本語形式に"""
+    dt = parse_iso8601(date_str)
+    return dt.strftime("%Y年%m月%d日")
 
-def generate_css():
-    """プロ仕様スタイルシート"""
-    return """:root {
-  --primary: #ff6b6b;
-  --primary-dark: #ee5555;
-  --secondary: #4ecdc4;
-  --text: #2d3436;
-  --text-light: #636e72;
-  --text-lighter: #b2bec3;
-  --border: #dfe6e9;
-  --bg: #f8f9fa;
-  --white: #ffffff;
-  --shadow-sm: 0 2px 4px rgba(0,0,0,0.04);
-  --shadow-md: 0 4px 12px rgba(0,0,0,0.08);
-  --shadow-lg: 0 8px 24px rgba(0,0,0,0.12);
+
+def channel_id_hash(channel_id: str) -> str:
+    """チャンネルIDから短いハッシュを生成（ファイル名用）"""
+    return hashlib.md5(channel_id.encode()).hexdigest()[:8]
+
+
+# ============================================================
+# YouTube API: 新人VTuber検索
+# ============================================================
+
+def search_channels(query: str, max_results: int = 20) -> list:
+    """
+    YouTube検索APIでチャンネルを検索
+    クォータコスト: 100/リクエスト
+    """
+    published_after = (datetime.now(timezone.utc) - timedelta(days=MAX_CHANNEL_AGE_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    data = api_request("search", {
+        "part": "snippet",
+        "q": query,
+        "type": "channel",
+        "maxResults": max_results,
+        "publishedAfter": published_after,
+        "order": "date",
+        "regionCode": "JP",
+        "relevanceLanguage": "ja",
+    })
+
+    channels = []
+    for item in data.get("items", []):
+        channels.append({
+            "channel_id": item["snippet"]["channelId"],
+            "title": item["snippet"]["title"],
+            "description": item["snippet"]["description"],
+            "thumbnail": item["snippet"]["thumbnails"].get("medium", {}).get("url", ""),
+            "published_at": item["snippet"]["publishedAt"],
+        })
+
+    return channels
+
+
+def get_channel_details(channel_ids: list) -> dict:
+    """
+    チャンネルの詳細情報（登録者数、動画数など）を取得
+    クォータコスト: 1/リクエスト（最大50チャンネル/リクエスト）
+    """
+    if not channel_ids:
+        return {}
+
+    # 50件ずつ分割
+    results = {}
+    for i in range(0, len(channel_ids), 50):
+        batch = channel_ids[i:i+50]
+        data = api_request("channels", {
+            "part": "snippet,statistics,brandingSettings",
+            "id": ",".join(batch),
+        })
+
+        for item in data.get("items", []):
+            cid = item["id"]
+            stats = item.get("statistics", {})
+            snippet = item.get("snippet", {})
+            branding = item.get("brandingSettings", {}).get("channel", {})
+
+            # 登録者数が非公開の場合
+            sub_count = int(stats.get("subscriberCount", 0))
+            if stats.get("hiddenSubscriberCount", False):
+                sub_count = -1  # 非公開
+
+            results[cid] = {
+                "channel_id": cid,
+                "title": snippet.get("title", ""),
+                "description": snippet.get("description", ""),
+                "custom_url": snippet.get("customUrl", ""),
+                "thumbnail": snippet.get("thumbnails", {}).get("medium", {}).get("url", ""),
+                "published_at": snippet.get("publishedAt", ""),
+                "subscriber_count": sub_count,
+                "video_count": int(stats.get("videoCount", 0)),
+                "view_count": int(stats.get("viewCount", 0)),
+                "keywords": branding.get("keywords", ""),
+            }
+
+    return results
+
+
+def get_latest_videos(channel_id: str, max_results: int = 5) -> list:
+    """
+    チャンネルの最新動画を取得
+    クォータコスト: 100/リクエスト（search APIを使用）
+    ※ クォータ節約のため、候補確定後のみ呼ぶ
+    """
+    data = api_request("search", {
+        "part": "snippet",
+        "channelId": channel_id,
+        "type": "video",
+        "maxResults": max_results,
+        "order": "date",
+    })
+
+    videos = []
+    for item in data.get("items", []):
+        videos.append({
+            "video_id": item["id"]["videoId"],
+            "title": item["snippet"]["title"],
+            "thumbnail": item["snippet"]["thumbnails"].get("medium", {}).get("url", ""),
+            "published_at": item["snippet"]["publishedAt"],
+        })
+
+    return videos
+
+
+def get_video_details(video_ids: list) -> dict:
+    """
+    動画の詳細情報（再生回数など）を取得
+    クォータコスト: 1/リクエスト
+    """
+    if not video_ids:
+        return {}
+
+    results = {}
+    for i in range(0, len(video_ids), 50):
+        batch = video_ids[i:i+50]
+        data = api_request("videos", {
+            "part": "snippet,statistics,contentDetails",
+            "id": ",".join(batch),
+        })
+
+        for item in data.get("items", []):
+            vid = item["id"]
+            stats = item.get("statistics", {})
+            results[vid] = {
+                "video_id": vid,
+                "title": item["snippet"]["title"],
+                "view_count": int(stats.get("viewCount", 0)),
+                "like_count": int(stats.get("likeCount", 0)),
+                "duration": item.get("contentDetails", {}).get("duration", ""),
+            }
+
+    return results
+
+
+# ============================================================
+# フィルタリング
+# ============================================================
+
+def is_likely_vtuber(channel: dict) -> bool:
+    """VTuberの可能性が高いか判定"""
+    text = (channel.get("title", "") + " " +
+            channel.get("description", "") + " " +
+            channel.get("keywords", "")).lower()
+
+    return any(kw.lower() in text for kw in VTUBER_KEYWORDS)
+
+
+def passes_filters(channel: dict) -> tuple:
+    """
+    フィルタリング条件をチェック
+    Returns: (passes: bool, reason: str)
+    """
+    # 登録者数チェック（非公開は通す）
+    sub_count = channel.get("subscriber_count", 0)
+    if sub_count > MAX_SUBSCRIBERS and sub_count != -1:
+        return False, f"登録者数が{MAX_SUBSCRIBERS}人を超えている（{sub_count}人）"
+
+    # チャンネル年齢チェック
+    pub_date = channel.get("published_at", "")
+    if pub_date:
+        age = days_ago(pub_date)
+        if age > MAX_CHANNEL_AGE_DAYS:
+            return False, f"チャンネル開設から{age}日経過（上限{MAX_CHANNEL_AGE_DAYS}日）"
+
+    # 動画数チェック
+    video_count = channel.get("video_count", 0)
+    if video_count < MIN_VIDEOS:
+        return False, f"動画数が{video_count}本（最低{MIN_VIDEOS}本必要）"
+
+    # VTuber判定
+    if not is_likely_vtuber(channel):
+        return False, "VTuber関連キーワードが見つからない"
+
+    return True, "OK"
+
+
+# ============================================================
+# ChatGPT API: 紹介文生成（オプション）
+# ============================================================
+
+def generate_introduction(channel: dict, videos: list) -> str:
+    """ChatGPT APIで紹介文を自動生成"""
+    if not OPENAI_API_KEY:
+        return generate_fallback_introduction(channel)
+
+    video_titles = "\n".join([f"- {v['title']}" for v in videos[:5]])
+
+    prompt = f"""以下のVTuberチャンネル情報をもとに、応援する気持ちを込めた紹介文を3行で書いてください。
+フレンドリーで明るいトーンで、視聴者が「見てみたい」と思うような紹介にしてください。
+
+チャンネル名: {channel['title']}
+チャンネル説明: {channel.get('description', 'なし')[:200]}
+最近の動画:
+{video_titles}
+登録者数: {format_subscriber_count(channel.get('subscriber_count', 0))}
+
+ルール:
+- 3行以内
+- 絵文字は1〜2個まで
+- 「応援しています」的な前向きな締め
+- マークダウンは使わない"""
+
+    try:
+        req_body = json.dumps({
+            "model": OPENAI_MODEL,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 200,
+            "temperature": 0.7,
+        }).encode("utf-8")
+
+        req = Request(
+            "https://api.openai.com/v1/chat/completions",
+            data=req_body,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {OPENAI_API_KEY}",
+            },
+        )
+        with urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            return data["choices"][0]["message"]["content"].strip()
+
+    except Exception as e:
+        print(f"[WARN] ChatGPT API error: {e}")
+        return generate_fallback_introduction(channel)
+
+
+def generate_fallback_introduction(channel: dict) -> str:
+    """ChatGPT APIが使えない場合のフォールバック紹介文"""
+    title = channel.get("title", "名前不明")
+    desc = channel.get("description", "")[:100]
+    if desc:
+        return f"{title}さんがVTuberとしてデビュー！ {desc.split(chr(10))[0]}"
+    return f"{title}さんがVTuberとしてデビュー！ ぜひチャンネルをチェックしてみてください。"
+
+
+# ============================================================
+# メインロジック: 候補収集
+# ============================================================
+
+def collect_candidates() -> list:
+    """
+    全検索クエリで新人VTuber候補を収集し、フィルタリング
+    """
+    print("=" * 60)
+    print("新人VTuber候補を収集中...")
+    print("=" * 60)
+
+    # 既存の候補・承認済みリストを読み込み
+    existing_candidates = load_json(CANDIDATES_FILE, [])
+    approved = load_json(APPROVED_FILE, [])
+
+    existing_ids = {c["channel_id"] for c in existing_candidates}
+    approved_ids = {a["channel_id"] for a in approved}
+
+    all_channel_ids = []
+    channel_snippets = {}  # channel_id -> search snippet
+
+    # 各クエリで検索
+    for query in SEARCH_QUERIES:
+        print(f"\n検索中: 「{query}」")
+        results = search_channels(query, max_results=10)
+        print(f"  → {len(results)}件ヒット")
+
+        for ch in results:
+            cid = ch["channel_id"]
+            if cid not in existing_ids and cid not in approved_ids:
+                if cid not in channel_snippets:
+                    all_channel_ids.append(cid)
+                    channel_snippets[cid] = ch
+
+    if not all_channel_ids:
+        print("\n新しい候補はありませんでした。")
+        return existing_candidates
+
+    # 重複を除去した新規チャンネルの詳細を取得
+    unique_ids = list(set(all_channel_ids))
+    print(f"\n新規チャンネル {len(unique_ids)}件の詳細を取得中...")
+    details = get_channel_details(unique_ids)
+
+    # フィルタリング
+    new_candidates = []
+    for cid, detail in details.items():
+        # スニペット情報をマージ
+        snippet = channel_snippets.get(cid, {})
+        detail["thumbnail"] = detail.get("thumbnail") or snippet.get("thumbnail", "")
+
+        passes, reason = passes_filters(detail)
+        if passes:
+            detail["discovered_at"] = datetime.now(timezone.utc).isoformat()
+            detail["status"] = "pending"  # pending / approved / rejected
+            new_candidates.append(detail)
+            print(f"  ✅ {detail['title']}（{format_subscriber_count(detail.get('subscriber_count', 0))}）")
+        else:
+            print(f"  ❌ {detail.get('title', cid)}: {reason}")
+
+    # 既存候補とマージ
+    merged = existing_candidates + new_candidates
+    print(f"\n候補合計: {len(merged)}件（新規 {len(new_candidates)}件）")
+
+    return merged
+
+
+# ============================================================
+# 承認処理
+# ============================================================
+
+def approve_candidate(candidates: list, channel_id: str) -> tuple:
+    """
+    候補を承認して承認リストに移動
+    Returns: (updated_candidates, approved_entry)
+    """
+    approved = load_json(APPROVED_FILE, [])
+
+    target = None
+    remaining = []
+    for c in candidates:
+        if c["channel_id"] == channel_id:
+            target = c
+        else:
+            remaining.append(c)
+
+    if not target:
+        print(f"[WARN] チャンネル {channel_id} が候補リストに見つかりません")
+        return candidates, None
+
+    # 最新動画を取得
+    print(f"「{target['title']}」の最新動画を取得中...")
+    videos = get_latest_videos(channel_id, max_results=5)
+    target["latest_videos"] = videos
+
+    # 紹介文を生成
+    print(f"紹介文を生成中...")
+    target["introduction"] = generate_introduction(target, videos)
+
+    # 承認
+    target["status"] = "approved"
+    target["approved_at"] = datetime.now(timezone.utc).isoformat()
+    approved.append(target)
+
+    save_json(APPROVED_FILE, approved)
+    print(f"✅ {target['title']} を承認しました")
+
+    return remaining, target
+
+
+def auto_approve_from_spreadsheet():
+    """
+    Google Spreadsheet経由の承認をチェック
+    （Apps Scriptが approved.json に直接書き込む想定）
+    ※ 将来実装。現在はCLIから approve コマンドで代用
+    """
+    pass
+
+
+# ============================================================
+# HTML生成
+# ============================================================
+
+def render_css() -> str:
+    """CSSを生成"""
+    return """
+:root {
+  --primary: #6C5CE7;
+  --primary-light: #A29BFE;
+  --accent: #FD79A8;
+  --accent-light: #FDCB6E;
+  --bg: #F8F9FA;
+  --card-bg: #FFFFFF;
+  --text: #2D3436;
+  --text-light: #636E72;
+  --border: #E9ECEF;
+  --shadow: 0 2px 12px rgba(0,0,0,0.08);
+  --shadow-hover: 0 8px 25px rgba(108,92,231,0.15);
+  --radius: 12px;
 }
 
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
-}
+* { margin: 0; padding: 0; box-sizing: border-box; }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Hiragino Kaku Gothic ProN", "Hiragino Sans", Meiryo, sans-serif;
-  line-height: 1.7;
-  color: var(--text);
+  font-family: "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Segoe UI", sans-serif;
   background: var(--bg);
-  font-size: 15px;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+  color: var(--text);
+  line-height: 1.7;
+  min-height: 100vh;
 }
 
-header {
-  background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
-  color: var(--white);
-  padding: 0;
-  box-shadow: var(--shadow-md);
-  position: sticky;
-  top: 0;
-  z-index: 1000;
+/* ヘッダー */
+.header {
+  background: linear-gradient(135deg, var(--primary), #4834D4);
+  color: white;
+  padding: 2rem 1rem;
+  text-align: center;
+  position: relative;
+  overflow: hidden;
+}
+.header::before {
+  content: '';
+  position: absolute;
+  top: -50%;
+  left: -50%;
+  width: 200%;
+  height: 200%;
+  background: radial-gradient(circle, rgba(255,255,255,0.1) 0%, transparent 70%);
+  animation: pulse 4s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%, 100% { transform: scale(1); opacity: 0.5; }
+  50% { transform: scale(1.1); opacity: 1; }
+}
+.header h1 {
+  font-size: 1.8rem;
+  position: relative;
+  z-index: 1;
+  text-shadow: 0 2px 4px rgba(0,0,0,0.2);
+}
+.header p {
+  font-size: 0.95rem;
+  opacity: 0.9;
+  margin-top: 0.5rem;
+  position: relative;
+  z-index: 1;
 }
 
-header .container {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 1rem 1.5rem;
+/* メインコンテンツ */
+.container {
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 1.5rem 1rem;
 }
 
-h1 {
-  font-size: 1.5rem;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  margin: 0;
+/* セクションタイトル */
+.section-title {
+  font-size: 1.2rem;
+  color: var(--primary);
+  margin: 2rem 0 1rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 2px solid var(--primary-light);
   display: flex;
   align-items: center;
   gap: 0.5rem;
 }
 
-.subtitle {
-  font-size: 0.85rem;
-  opacity: 0.9;
-  font-weight: 400;
-  margin-top: 0.25rem;
-}
-
-.container {
-  max-width: 1200px;
-  margin: 0 auto;
-  padding: 0 1.5rem;
-}
-
-main {
-  padding: 2rem 0 4rem;
-  min-height: 80vh;
-}
-
-.list {
-  display: grid;
-  gap: 1rem;
-  margin-top: 2rem;
-}
-
-article.post {
-  background: var(--white);
+/* VTuberカード */
+.vtuber-card {
+  background: var(--card-bg);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 1.2rem;
+  margin-bottom: 1rem;
+  transition: all 0.3s ease;
   border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 1.5rem;
-  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-  position: relative;
+  animation: fadeInUp 0.5s ease both;
+}
+.vtuber-card:hover {
+  box-shadow: var(--shadow-hover);
+  transform: translateY(-2px);
+  border-color: var(--primary-light);
+}
+
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.card-header {
+  display: flex;
+  gap: 1rem;
+  align-items: flex-start;
+}
+.card-thumbnail {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 3px solid var(--primary-light);
+  flex-shrink: 0;
+}
+.card-info {
+  flex: 1;
+  min-width: 0;
+}
+.card-name {
+  font-size: 1.1rem;
+  font-weight: bold;
+  color: var(--text);
+  margin-bottom: 0.25rem;
+}
+.card-name a {
+  color: inherit;
+  text-decoration: none;
+}
+.card-name a:hover {
+  color: var(--primary);
+}
+.card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  color: var(--text-light);
+  margin-bottom: 0.5rem;
+}
+.card-meta span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+}
+.card-intro {
+  font-size: 0.9rem;
+  color: var(--text);
+  line-height: 1.8;
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+}
+
+/* 動画セクション */
+.card-videos {
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+}
+.card-videos-title {
+  font-size: 0.8rem;
+  color: var(--text-light);
+  margin-bottom: 0.5rem;
+}
+.video-link {
+  display: block;
+  font-size: 0.85rem;
+  color: var(--primary);
+  text-decoration: none;
+  padding: 0.3rem 0;
+  white-space: nowrap;
   overflow: hidden;
+  text-overflow: ellipsis;
+}
+.video-link:hover {
+  text-decoration: underline;
 }
 
-article.post::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 4px;
-  height: 100%;
-  background: linear-gradient(180deg, var(--primary), var(--secondary));
-  opacity: 0;
-  transition: opacity 0.25s;
+/* CTAボタン */
+.card-cta {
+  display: inline-block;
+  margin-top: 0.75rem;
+  padding: 0.5rem 1.2rem;
+  background: linear-gradient(135deg, var(--accent), #E84393);
+  color: white;
+  border-radius: 2rem;
+  text-decoration: none;
+  font-size: 0.85rem;
+  font-weight: bold;
+  transition: all 0.3s ease;
+}
+.card-cta:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(253,121,168,0.4);
 }
 
-article.post:hover {
-  box-shadow: var(--shadow-lg);
-  transform: translateY(-3px);
+/* 広告プレースホルダー */
+.ad-space {
+  background: linear-gradient(135deg, #FFF3E0, #FFE0B2);
+  border: 1px dashed #FFB74D;
+  border-radius: var(--radius);
+  padding: 1.5rem;
+  margin: 1.5rem 0;
+  text-align: center;
+  color: #F57C00;
+  font-size: 0.8rem;
+}
+
+/* ページネーション */
+.pagination {
+  display: flex;
+  justify-content: center;
+  gap: 0.5rem;
+  margin: 2rem 0;
+}
+.pagination a, .pagination span {
+  display: inline-block;
+  padding: 0.5rem 1rem;
+  border-radius: var(--radius);
+  text-decoration: none;
+  font-size: 0.9rem;
+  border: 1px solid var(--border);
+}
+.pagination a {
+  color: var(--primary);
+  background: white;
+}
+.pagination a:hover {
+  background: var(--primary);
+  color: white;
+}
+.pagination .current {
+  background: var(--primary);
+  color: white;
   border-color: var(--primary);
 }
 
-article.post:hover::before {
-  opacity: 1;
-}
-
-time {
+/* フッター */
+.footer {
+  background: linear-gradient(135deg, #2D3436, #636E72);
+  color: white;
+  text-align: center;
+  padding: 1.5rem 1rem;
+  margin-top: 3rem;
   font-size: 0.8rem;
-  color: var(--text-lighter);
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  margin-bottom: 0.75rem;
-  font-weight: 500;
-  letter-spacing: 0.02em;
 }
+.footer a { color: var(--primary-light); text-decoration: none; }
+.footer a:hover { text-decoration: underline; }
 
-time::before {
-  content: '🕐';
-  font-size: 0.9rem;
-}
-
-article.post h2 {
-  font-size: 1.15rem;
-  font-weight: 600;
-  line-height: 1.6;
-  margin-bottom: 0.75rem;
-  letter-spacing: -0.01em;
-}
-
-article.post h2 a {
-  color: var(--text);
-  text-decoration: none;
-  background: linear-gradient(transparent 60%, rgba(255, 107, 107, 0.15) 60%);
-  transition: all 0.2s;
-}
-
-article.post h2 a:hover {
-  color: var(--primary);
-  background: linear-gradient(transparent 60%, rgba(255, 107, 107, 0.3) 60%);
-}
-
-.source {
-  font-size: 0.8rem;
+/* 空状態 */
+.empty-state {
+  text-align: center;
+  padding: 3rem 1rem;
   color: var(--text-light);
-  background: linear-gradient(135deg, #f8f9fa 0%, #ecf0f1 100%);
-  display: inline-flex;
-  align-items: center;
-  padding: 0.35rem 0.85rem;
-  border-radius: 20px;
-  font-weight: 600;
-  border: 1px solid var(--border);
-  transition: all 0.2s;
 }
+.empty-state .emoji { font-size: 3rem; margin-bottom: 1rem; }
 
-.source:hover {
-  background: linear-gradient(135deg, var(--secondary) 0%, #45b7af 100%);
-  color: var(--white);
-  border-color: var(--secondary);
-  transform: translateX(2px);
+/* レスポンシブ */
+@media (max-width: 600px) {
+  .header h1 { font-size: 1.4rem; }
+  .card-thumbnail { width: 48px; height: 48px; }
+  .card-meta { font-size: 0.75rem; }
 }
+""".strip()
 
-.ad-block {
-  margin: 2rem 0;
-  padding: 1.5rem;
-  background: linear-gradient(135deg, #ffeaa7 0%, #fdcb6e 100%);
-  border: 2px dashed rgba(0,0,0,0.1);
-  border-radius: 12px;
-  text-align: center;
-  min-height: 140px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  position: relative;
-  overflow: hidden;
-}
 
-.ad-block::before {
-  content: '📢 Advertisement';
-  position: absolute;
-  top: 0.5rem;
-  left: 50%;
-  transform: translateX(-50%);
-  font-size: 0.7rem;
-  color: rgba(0,0,0,0.4);
-  font-weight: 600;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-}
+def render_head(title: str, description: str, url: str = "", og_image: str = "") -> str:
+    """HTMLのhead部分を生成"""
+    og_image_tag = f'<meta property="og:image" content="{og_image}">' if og_image else ""
+    canonical = f'<link rel="canonical" href="{url}">' if url else ""
 
-.ad-block p {
-  color: rgba(0,0,0,0.5);
-  font-size: 0.85rem;
-  margin-top: 1rem;
-}
+    return f"""<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{title}</title>
+  <meta name="description" content="{description}">
+  <meta property="og:title" content="{title}">
+  <meta property="og:description" content="{description}">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="{url}">
+  {og_image_tag}
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="{title}">
+  <meta name="twitter:description" content="{description}">
+  {canonical}
+  <link rel="stylesheet" href="style.css">
+  <!-- Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-SJ6FD6ZGJE"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){{dataLayer.push(arguments);}}
+    gtag('js', new Date());
+    gtag('config', 'G-SJ6FD6ZGJE');
+  </script>
+</head>"""
 
-nav.pager {
-  text-align: center;
-  margin: 4rem 0 2rem;
-}
 
-nav.pager a {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.85rem 2.5rem;
-  background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
-  color: var(--white);
-  text-decoration: none;
-  border-radius: 50px;
-  font-weight: 600;
-  font-size: 0.95rem;
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  box-shadow: var(--shadow-md);
-  letter-spacing: 0.02em;
-}
+def render_header() -> str:
+    """サイトヘッダーを生成"""
+    return f"""
+<header class="header">
+  <h1>{SITE_NAME}</h1>
+  <p>{SITE_TAGLINE}</p>
+</header>"""
 
-nav.pager a:hover {
-  transform: translateY(-3px);
-  box-shadow: var(--shadow-lg);
-  background: linear-gradient(135deg, var(--primary-dark) 0%, #dd4444 100%);
-}
 
-nav.pager a::after {
-  content: '→';
-  font-size: 1.2rem;
-  transition: transform 0.3s;
-}
+def render_vtuber_card(vtuber: dict, index: int = 0) -> str:
+    """VTuberカードHTMLを生成"""
+    name = vtuber.get("title", "名前不明")
+    thumbnail = vtuber.get("thumbnail", "")
+    sub_count = vtuber.get("subscriber_count", 0)
+    intro = vtuber.get("introduction", "")
+    channel_id = vtuber.get("channel_id", "")
+    channel_url = f"https://www.youtube.com/channel/{channel_id}"
+    pub_date = vtuber.get("published_at", "")
+    videos = vtuber.get("latest_videos", [])
 
-nav.pager a:hover::after {
-  transform: translateX(4px);
-}
+    # メタ情報
+    meta_parts = []
+    if sub_count > 0:
+        meta_parts.append(f"<span>📊 {format_subscriber_count(sub_count)}</span>")
+    elif sub_count == -1:
+        meta_parts.append("<span>📊 非公開</span>")
+    if pub_date:
+        meta_parts.append(f"<span>📅 {format_date_jp(pub_date)}\u00A0開設</span>")
 
-nav.pager a[href*="index"]::after {
-  content: '←';
-  order: -1;
-}
+    meta_html = "\n          ".join(meta_parts)
 
-nav.pager a[href*="index"]:hover::after {
-  transform: translateX(-4px);
-}
+    # 紹介文
+    intro_html = ""
+    if intro:
+        intro_escaped = intro.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
+        intro_html = f'<div class="card-intro">{intro_escaped}</div>'
 
-.site-footer {
-  background: linear-gradient(135deg, #2d3436 0%, #1e272e 100%);
-  color: rgba(255,255,255,0.8);
-  padding: 3rem 0 2rem;
-  margin-top: 6rem;
-  border-top: 4px solid var(--primary);
-}
+    # 動画リスト
+    videos_html = ""
+    if videos:
+        video_links = ""
+        for v in videos[:3]:
+            vid = v.get("video_id", "")
+            vtitle = v.get("title", "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            video_links += f'<a href="https://www.youtube.com/watch?v={vid}" target="_blank" rel="noopener" class="video-link">▶ {vtitle}</a>\n'
+        videos_html = f"""
+      <div class="card-videos">
+        <div class="card-videos-title">最近の動画</div>
+        {video_links}
+      </div>"""
 
-.site-footer p {
-  text-align: center;
-  font-size: 0.9rem;
-  margin: 0.5rem 0;
-}
+    delay = index * 0.05
 
-.site-footer .sources {
-  font-size: 0.8rem;
-  opacity: 0.7;
-  margin-top: 1rem;
-  padding-top: 1rem;
-  border-top: 1px solid rgba(255,255,255,0.1);
-}
+    return f"""
+    <article class="vtuber-card" style="animation-delay: {delay}s">
+      <div class="card-header">
+        <img src="{thumbnail}" alt="{name}" class="card-thumbnail" loading="lazy"
+             onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2264%22 height=%2264%22><rect fill=%22%236C5CE7%22 width=%2264%22 height=%2264%22 rx=%2232%22/><text x=%2232%22 y=%2240%22 fill=%22white%22 text-anchor=%22middle%22 font-size=%2224%22>?</text></svg>'">
+        <div class="card-info">
+          <div class="card-name">
+            <a href="{channel_url}" target="_blank" rel="noopener">{name}</a>
+          </div>
+          <div class="card-meta">
+            {meta_html}
+          </div>
+        </div>
+      </div>
+      {intro_html}
+      {videos_html}
+      <a href="{channel_url}" target="_blank" rel="noopener" class="card-cta">チャンネルを見る →</a>
+    </article>"""
 
-@media (max-width: 768px) {
-  body {
-    font-size: 14px;
-  }
 
-  .container {
-    padding: 0 1rem;
-  }
-  
-  header .container {
-    flex-direction: column;
-    align-items: flex-start;
-    padding: 1rem;
-  }
-  
-  h1 {
-    font-size: 1.3rem;
-  }
-  
-  .subtitle {
-    font-size: 0.8rem;
-  }
-  
-  article.post {
-    padding: 1.25rem;
-  }
-  
-  article.post h2 {
-    font-size: 1.05rem;
-  }
-  
-  nav.pager a {
-    padding: 0.75rem 2rem;
-    font-size: 0.9rem;
-  }
-  
-  .ad-block {
-    min-height: 120px;
-    padding: 1.25rem;
-  }
+def render_ad_space() -> str:
+    """広告プレースホルダーを生成"""
+    return """
+    <div class="ad-space">
+      📢 広告スペース（nend審査通過後に表示）
+    </div>"""
 
-  main {
-    padding: 1.5rem 0 3rem;
-  }
-}
 
-@media (min-width: 769px) {
-  .list {
-    gap: 1.25rem;
-  }
+def render_pagination(current_page: int, total_pages: int) -> str:
+    """ページネーションHTMLを生成"""
+    if total_pages <= 1:
+        return ""
 
-  article.post {
-    padding: 1.75rem;
-  }
-}
+    parts = ['<div class="pagination">']
+    for i in range(1, total_pages + 1):
+        filename = "index.html" if i == 1 else f"page{i}.html"
+        if i == current_page:
+            parts.append(f'  <span class="current">{i}</span>')
+        else:
+            parts.append(f'  <a href="{filename}">{i}</a>')
+    parts.append("</div>")
 
-@keyframes fadeIn {
-  from {
-    opacity: 0;
-    transform: translateY(10px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
+    return "\n".join(parts)
 
-article.post {
-  animation: fadeIn 0.4s ease-out;
-}
 
-article.post:nth-child(1) { animation-delay: 0.05s; }
-article.post:nth-child(2) { animation-delay: 0.1s; }
-article.post:nth-child(3) { animation-delay: 0.15s; }
-article.post:nth-child(4) { animation-delay: 0.2s; }
-article.post:nth-child(5) { animation-delay: 0.25s; }
+def render_footer() -> str:
+    """フッターHTMLを生成"""
+    now = datetime.now(timezone.utc) + timedelta(hours=9)  # JST
+    update_time = now.strftime("%Y/%m/%d %H:%M")
 
-::-webkit-scrollbar {
-  width: 10px;
-}
+    return f"""
+<footer class="footer">
+  <p>{SITE_NAME} | 最終更新: {update_time} JST</p>
+  <p>お問い合わせ・掲載削除依頼は<a href="mailto:contact@vtuber-matome.net">こちら</a></p>
+  <p style="margin-top: 0.5rem; font-size: 0.7rem; opacity: 0.7;">
+    当サイトはYouTubeの公開データをもとに新人VTuberを紹介しています。
+  </p>
+</footer>"""
 
-::-webkit-scrollbar-track {
-  background: var(--bg);
-}
 
-::-webkit-scrollbar-thumb {
-  background: linear-gradient(180deg, var(--primary), var(--primary-dark));
-  border-radius: 5px;
-}
+def generate_index_page(approved: list, page: int, total_pages: int) -> str:
+    """メインページのHTMLを生成"""
+    start = (page - 1) * ITEMS_PER_PAGE
+    end = start + ITEMS_PER_PAGE
+    page_items = approved[start:end]
 
-::-webkit-scrollbar-thumb:hover {
-  background: linear-gradient(180deg, var(--primary-dark), #dd4444);
-}
+    title = f"{SITE_NAME} - {SITE_TAGLINE}"
+    description = "新人VTuberを毎日発掘・紹介！あなたの新しい推しが見つかるかも。"
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #1e272e;
-    --white: #2d3436;
-    --text: #dfe6e9;
-    --text-light: #b2bec3;
-    --border: #636e72;
-  }
-  
-  .source {
-    background: linear-gradient(135deg, #2d3436 0%, #34495e 100%);
-  }
-}
-"""
+    cards_html = ""
+    for i, vtuber in enumerate(page_items):
+        cards_html += render_vtuber_card(vtuber, i)
+        # 5件ごとに広告
+        if (i + 1) % 5 == 0 and i < len(page_items) - 1:
+            cards_html += render_ad_space()
 
-def generate_robots_txt():
-    """robots.txt生成"""
-    return """User-agent: *
+    if not page_items:
+        cards_html = """
+    <div class="empty-state">
+      <div class="emoji">🔍</div>
+      <p>まだ紹介済みのVTuberがいません。</p>
+      <p>まもなく新人VTuberの紹介が始まります！</p>
+    </div>"""
+
+    page_url = SITE_URL if page == 1 else f"{SITE_URL}/page{page}.html"
+
+    return f"""{render_head(title, description, page_url)}
+<body>
+  {render_header()}
+  <main class="container">
+    <div class="section-title">✨ 新人VTuber紹介（{len(approved)}人）</div>
+    {cards_html}
+    {render_pagination(page, total_pages)}
+  </main>
+  {render_footer()}
+</body>
+</html>"""
+
+
+def generate_vtuber_page(vtuber: dict) -> str:
+    """個別VTuber紹介ページを生成"""
+    name = vtuber.get("title", "名前不明")
+    channel_id = vtuber.get("channel_id", "")
+    slug = channel_id_hash(channel_id)
+    thumbnail = vtuber.get("thumbnail", "")
+    intro = vtuber.get("introduction", "")
+    channel_url = f"https://www.youtube.com/channel/{channel_id}"
+    videos = vtuber.get("latest_videos", [])
+
+    title = f"【新人VTuber】{name}さんがデビュー！ | {SITE_NAME}"
+    description = intro[:120] if intro else f"{name}さんの紹介ページ"
+    page_url = f"{SITE_URL}/vtuber/{slug}.html"
+
+    # 動画埋め込み
+    videos_html = ""
+    if videos:
+        videos_section = ""
+        for v in videos[:3]:
+            vid = v.get("video_id", "")
+            vtitle = v.get("title", "")
+            videos_section += f"""
+      <div style="margin-bottom: 1rem;">
+        <div style="position:relative;padding-bottom:56.25%;height:0;overflow:hidden;border-radius:8px;">
+          <iframe src="https://www.youtube.com/embed/{vid}" frameborder="0"
+                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                  allowfullscreen
+                  style="position:absolute;top:0;left:0;width:100%;height:100%;"
+                  loading="lazy"></iframe>
+        </div>
+        <p style="font-size:0.85rem;color:var(--text-light);margin-top:0.5rem;">{vtitle}</p>
+      </div>"""
+        videos_html = f"""
+    <div class="section-title">🎬 最近の動画</div>
+    {videos_section}"""
+
+    intro_escaped = ""
+    if intro:
+        intro_escaped = intro.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
+
+    return f"""{render_head(title, description, page_url, thumbnail)}
+<body>
+  {render_header()}
+  <main class="container">
+    <a href="/" style="display:inline-block;margin-bottom:1rem;color:var(--primary);text-decoration:none;">← トップに戻る</a>
+
+    <article class="vtuber-card" style="animation-delay:0s">
+      <div class="card-header">
+        <img src="{thumbnail}" alt="{name}" class="card-thumbnail" loading="lazy">
+        <div class="card-info">
+          <div class="card-name" style="font-size:1.3rem;">{name}</div>
+          <div class="card-meta">
+            <span>📊 {format_subscriber_count(vtuber.get('subscriber_count', 0))}</span>
+            <span>📅 {format_date_jp(vtuber.get('published_at', ''))}\u00A0開設</span>
+          </div>
+        </div>
+      </div>
+      <div class="card-intro" style="font-size:1rem;">
+        {intro_escaped}
+      </div>
+      <a href="{channel_url}" target="_blank" rel="noopener" class="card-cta" style="margin-top:1rem;">
+        チャンネルを見る →
+      </a>
+    </article>
+
+    {videos_html}
+
+    {render_ad_space()}
+  </main>
+  {render_footer()}
+</body>
+</html>"""
+
+
+# ============================================================
+# 静的ファイル生成
+# ============================================================
+
+def generate_robots_txt() -> str:
+    return f"""User-agent: *
 Allow: /
+Sitemap: {SITE_URL}/sitemap.xml"""
 
-Sitemap: https://vtuber-matome.net/sitemap.xml
-"""
 
-def generate_sitemap(items):
-    """sitemap.xml生成（SEO）"""
-    sitemap = '<?xml version="1.0" encoding="UTF-8"?>\n'
-    sitemap += '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
-    
-    # トップページ
-    sitemap += '  <url>\n'
-    sitemap += '    <loc>https://vtuber-matome.net/</loc>\n'
-    sitemap += '    <changefreq>hourly</changefreq>\n'
-    sitemap += '    <priority>1.0</priority>\n'
-    sitemap += '  </url>\n'
-    
-    # 2ページ目
-    if len(items) > ITEMS_PER_PAGE:
-        sitemap += '  <url>\n'
-        sitemap += '    <loc>https://vtuber-matome.net/page2.html</loc>\n'
-        sitemap += '    <changefreq>daily</changefreq>\n'
-        sitemap += '    <priority>0.8</priority>\n'
-        sitemap += '  </url>\n'
-    
-    sitemap += '</urlset>'
-    
-    return sitemap
+def generate_sitemap(approved: list) -> str:
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-def write_files(items):
-    """ファイル書き込み"""
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    
-    print("📄 index.html 生成中...")
-    (OUTPUT_DIR / "index.html").write_text(render_index(items), encoding="utf-8")
-    
-    print("📄 page2.html 生成中...")
-    (OUTPUT_DIR / "page2.html").write_text(render_page2(items), encoding="utf-8")
-    
-    print("🎨 style.css 生成中...")
-    (OUTPUT_DIR / "style.css").write_text(generate_css(), encoding="utf-8")
-    
-    print("🔍 robots.txt 生成中...")
-    (OUTPUT_DIR / "robots.txt").write_text(generate_robots_txt(), encoding="utf-8")
-    
-    print("🗺️ sitemap.xml 生成中...")
-    (OUTPUT_DIR / "sitemap.xml").write_text(generate_sitemap(items), encoding="utf-8")
-    
-    print("✅ すべてのファイル生成完了")
+    urls = [f"""  <url>
+    <loc>{SITE_URL}/</loc>
+    <lastmod>{now}</lastmod>
+    <changefreq>daily</changefreq>
+    <priority>1.0</priority>
+  </url>"""]
+
+    for vtuber in approved:
+        slug = channel_id_hash(vtuber.get("channel_id", ""))
+        urls.append(f"""  <url>
+    <loc>{SITE_URL}/vtuber/{slug}.html</loc>
+    <lastmod>{now}</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.8</priority>
+  </url>""")
+
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+{chr(10).join(urls)}
+</urlset>"""
+
+
+def write_all_files(approved: list):
+    """全ファイルを書き出す"""
+    print("\nHTMLファイルを生成中...")
+
+    # CSS
+    css_path = PUBLIC_DIR / "style.css"
+    css_path.write_text(render_css(), encoding="utf-8")
+    print(f"  ✅ style.css")
+
+    # 承認済みを新しい順にソート
+    sorted_approved = sorted(
+        approved,
+        key=lambda x: x.get("approved_at", x.get("discovered_at", "")),
+        reverse=True,
+    )
+
+    # メインページ（ページネーション）
+    total_pages = max(1, math.ceil(len(sorted_approved) / ITEMS_PER_PAGE))
+    for page in range(1, total_pages + 1):
+        filename = "index.html" if page == 1 else f"page{page}.html"
+        html = generate_index_page(sorted_approved, page, total_pages)
+        (PUBLIC_DIR / filename).write_text(html, encoding="utf-8")
+        print(f"  ✅ {filename}")
+
+    # 個別VTuberページ
+    vtuber_dir = PUBLIC_DIR / "vtuber"
+    vtuber_dir.mkdir(exist_ok=True)
+    for vtuber in sorted_approved:
+        slug = channel_id_hash(vtuber.get("channel_id", ""))
+        html = generate_vtuber_page(vtuber)
+        (vtuber_dir / f"{slug}.html").write_text(html, encoding="utf-8")
+    print(f"  ✅ 個別ページ: {len(sorted_approved)}件")
+
+    # robots.txt & sitemap.xml
+    (PUBLIC_DIR / "robots.txt").write_text(generate_robots_txt(), encoding="utf-8")
+    (PUBLIC_DIR / "sitemap.xml").write_text(generate_sitemap(sorted_approved), encoding="utf-8")
+    print(f"  ✅ robots.txt & sitemap.xml")
+
+    print(f"\n生成完了！ 合計 {total_pages + len(sorted_approved) + 3} ファイル")
+
+
+# ============================================================
+# CLI
+# ============================================================
+
+def print_candidates(candidates: list):
+    """候補リストを表示"""
+    pending = [c for c in candidates if c.get("status") == "pending"]
+    if not pending:
+        print("承認待ちの候補はありません。")
+        return
+
+    print(f"\n📋 承認待ちの候補: {len(pending)}件")
+    print("-" * 60)
+    for i, c in enumerate(pending, 1):
+        sub = format_subscriber_count(c.get("subscriber_count", 0))
+        age = days_ago(c.get("published_at", datetime.now(timezone.utc).isoformat()))
+        print(f"  {i}. {c['title']}")
+        print(f"     登録者: {sub} | 開設: {age}日前 | 動画: {c.get('video_count', 0)}本")
+        print(f"     ID: {c['channel_id']}")
+        print()
+
+
+def cli_approve(candidates: list) -> list:
+    """CLIから候補を承認する"""
+    pending = [c for c in candidates if c.get("status") == "pending"]
+    if not pending:
+        print("承認待ちの候補はありません。")
+        return candidates
+
+    print_candidates(candidates)
+    print("承認するチャンネル番号を入力（カンマ区切りで複数可、qで終了）:")
+
+    while True:
+        user_input = input("> ").strip()
+        if user_input.lower() == "q":
+            break
+
+        try:
+            indices = [int(x.strip()) for x in user_input.split(",")]
+            for idx in indices:
+                if 1 <= idx <= len(pending):
+                    channel_id = pending[idx - 1]["channel_id"]
+                    candidates, approved = approve_candidate(candidates, channel_id)
+                    if approved:
+                        print(f"  ✅ 承認: {approved['title']}")
+                else:
+                    print(f"  ❌ 無効な番号: {idx}")
+        except ValueError:
+            print("数字を入力してください")
+
+        # リスト更新
+        pending = [c for c in candidates if c.get("status") == "pending"]
+        if not pending:
+            print("全候補を処理しました。")
+            break
+
+    return candidates
+
+
+# ============================================================
+# メイン
+# ============================================================
 
 def main():
     """メイン処理"""
-    print("=" * 60)
-    print("VTuber News Aggregator - 起動")
-    print("=" * 60)
-    
     ensure_dirs()
-    old_items = load_cache()
-    html = fetch_html(BASE_URL)
-    
-    if not html:
-        print("⚠️ HTML取得失敗 - キャッシュから生成します")
-        if old_items:
-            write_files(old_items)
-            print("✅ キャッシュから生成完了")
-        else:
-            print("❌ キャッシュも存在しません")
-            sys.exit(1)
-        return
-    
-    new_items = parse_timeline(html)
-    
-    if not new_items:
-        print("⚠️ 記事が抽出できませんでした")
-        if old_items:
-            print("📦 キャッシュから生成します")
-            write_files(old_items)
-            print("✅ キャッシュから生成完了")
-        else:
-            print("❌ 生成するデータがありません")
-            sys.exit(1)
-        return
-    
-    merged_items = dedupe_and_merge(old_items, new_items)
-    save_cache(merged_items)
-    write_files(merged_items)
-    
-    print("=" * 60)
-    print("✅ 処理完了")
-    print(f"📊 総記事数: {len(merged_items)}件")
-    print("=" * 60)
+
+    if not YOUTUBE_API_KEY:
+        print("[ERROR] YOUTUBE_API_KEY が設定されていません")
+        print("環境変数 YOUTUBE_API_KEY を設定してください")
+        sys.exit(1)
+
+    # コマンドライン引数で動作を変える
+    mode = sys.argv[1] if len(sys.argv) > 1 else "collect"
+
+    if mode == "collect":
+        # 候補収集（自動実行用）
+        candidates = collect_candidates()
+        save_json(CANDIDATES_FILE, candidates)
+        print_candidates(candidates)
+
+        # 承認済みのHTMLも再生成
+        approved = load_json(APPROVED_FILE, [])
+        write_all_files(approved)
+
+    elif mode == "approve":
+        # 承認処理（手動実行用）
+        candidates = load_json(CANDIDATES_FILE, [])
+        candidates = cli_approve(candidates)
+        save_json(CANDIDATES_FILE, candidates)
+
+        # HTML再生成
+        approved = load_json(APPROVED_FILE, [])
+        write_all_files(approved)
+
+    elif mode == "generate":
+        # HTML生成のみ
+        approved = load_json(APPROVED_FILE, [])
+        write_all_files(approved)
+
+    elif mode == "status":
+        # ステータス表示
+        candidates = load_json(CANDIDATES_FILE, [])
+        approved = load_json(APPROVED_FILE, [])
+        pending = [c for c in candidates if c.get("status") == "pending"]
+        print(f"\n📊 ステータス")
+        print(f"  候補（未処理）: {len(pending)}件")
+        print(f"  承認済み: {len(approved)}件")
+        print(f"  合計候補: {len(candidates)}件")
+
+    else:
+        print(f"Unknown mode: {mode}")
+        print("Usage: python scrape.py [collect|approve|generate|status]")
+        sys.exit(1)
+
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        print(f"❌ エラーが発生しました: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
+    main()
