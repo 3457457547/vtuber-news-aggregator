@@ -12,9 +12,10 @@ on:
         default: 'collect'
         type: choice
         options:
-          - collect    # 候補収集 + HTML生成
-          - generate   # HTML生成のみ
-          - status     # ステータス確認
+          - collect      # 候補収集 + HTML生成
+          - approve-all  # 全候補を一括承認 + HTML生成
+          - generate     # HTML生成のみ
+          - status       # ステータス確認
 
 permissions:
   contents: write
