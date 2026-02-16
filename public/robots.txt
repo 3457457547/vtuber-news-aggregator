@@ -1,4 +1,3 @@
 User-agent: *
 Allow: /
-
-Sitemap: https://3457457547.github.io/vtuber-news-aggregator/sitemap.xml
+Sitemap: https://vtuber-matome.net/sitemap.xml
