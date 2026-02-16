@@ -1203,6 +1203,17 @@ def main():
         candidates = cli_approve(candidates)
         save_json(CANDIDATES_FILE, candidates)
 
+    elif mode == "approve-all":
+        # 全候補を一括承認（GitHub Actions用）
+        candidates = load_json(CANDIDATES_FILE, [])
+        pending = [c for c in candidates if c.get("status") == "pending"]
+        print(f"\n全{len(pending)}件を一括承認します...")
+        for c in pending:
+            candidates, approved_entry = approve_candidate(candidates, c["channel_id"])
+            if approved_entry:
+                print(f"  ✅ {approved_entry['title']}")
+        save_json(CANDIDATES_FILE, candidates)
+
         # HTML再生成
         approved = load_json(APPROVED_FILE, [])
         write_all_files(approved)
@@ -1224,7 +1235,7 @@ def main():
 
     else:
         print(f"Unknown mode: {mode}")
-        print("Usage: python scrape.py [collect|approve|generate|status]")
+        print("Usage: python scrape.py [collect|approve|approve-all|generate|status]")
         sys.exit(1)
 
 
