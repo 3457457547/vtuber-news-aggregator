@@ -1104,10 +1104,11 @@ def write_all_files(approved: list):
         (vtuber_dir / f"{slug}.html").write_text(html, encoding="utf-8")
     print(f"  ✅ 個別ページ: {len(sorted_approved)}件")
 
-    # robots.txt & sitemap.xml
+    # robots.txt & sitemap.xml & CNAME
     (PUBLIC_DIR / "robots.txt").write_text(generate_robots_txt(), encoding="utf-8")
     (PUBLIC_DIR / "sitemap.xml").write_text(generate_sitemap(sorted_approved), encoding="utf-8")
-    print(f"  ✅ robots.txt & sitemap.xml")
+    (PUBLIC_DIR / "CNAME").write_text("vtuber-matome.net", encoding="utf-8")
+    print(f"  ✅ robots.txt & sitemap.xml & CNAME")
 
     print(f"\n生成完了！ 合計 {total_pages + len(sorted_approved) + 3} ファイル")
 
