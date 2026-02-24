@@ -62,7 +62,7 @@ ITEMS_PER_PAGE = 20
 
 # ディレクトリ
 CACHE_DIR = Path("cache")
-PUBLIC_DIR = Path("public")
+PUBLIC_DIR = Path("docs")
 CANDIDATES_FILE = CACHE_DIR / "candidates.json"
 APPROVED_FILE = CACHE_DIR / "approved.json"
 
