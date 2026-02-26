@@ -1040,6 +1040,53 @@ def generate_vtuber_page(vtuber: dict) -> str:
 # 静的ファイル生成
 # ============================================================
 
+def generate_rss(approved: list) -> str:
+    """RSS 2.0フィードを生成"""
+    now = datetime.now(timezone.utc)
+    pub_date = now.strftime("%a, %d %b %Y %H:%M:%S +0000")
+
+    items = ""
+    sorted_list = sorted(
+        approved,
+        key=lambda x: x.get("approved_at", x.get("discovered_at", "")),
+        reverse=True,
+    )[:20]  # 最新20件
+
+    for vtuber in sorted_list:
+        name = vtuber.get("title", "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        slug = channel_id_hash(vtuber.get("channel_id", ""))
+        link = f"{SITE_URL}/vtuber/{slug}.html"
+        intro = vtuber.get("introduction", "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        channel_url = f"https://www.youtube.com/channel/{vtuber.get('channel_id', '')}"
+        sub_count = format_subscriber_count(vtuber.get("subscriber_count", 0))
+        approved_at = vtuber.get("approved_at", now.isoformat())
+        dt = parse_iso8601(approved_at)
+        item_date = dt.strftime("%a, %d %b %Y %H:%M:%S +0000")
+
+        description = f"{intro} チャンネル登録者: {sub_count} #新人VTuber"
+
+        items += f"""    <item>
+      <title>【新人VTuber】{name}さんがデビュー！</title>
+      <link>{link}</link>
+      <description>{description}</description>
+      <pubDate>{item_date}</pubDate>
+      <guid isPermaLink="true">{link}</guid>
+    </item>
+"""
+
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>{SITE_NAME}</title>
+    <link>{SITE_URL}</link>
+    <description>{SITE_TAGLINE}</description>
+    <language>ja</language>
+    <lastBuildDate>{pub_date}</lastBuildDate>
+    <atom:link href="{SITE_URL}/feed.xml" rel="self" type="application/rss+xml"/>
+{items}  </channel>
+</rss>"""
+
+
 def generate_robots_txt() -> str:
     return f"""User-agent: *
 Allow: /
@@ -1104,11 +1151,12 @@ def write_all_files(approved: list):
         (vtuber_dir / f"{slug}.html").write_text(html, encoding="utf-8")
     print(f"  ✅ 個別ページ: {len(sorted_approved)}件")
 
-    # robots.txt & sitemap.xml & CNAME
+    # robots.txt & sitemap.xml & CNAME & RSS
     (PUBLIC_DIR / "robots.txt").write_text(generate_robots_txt(), encoding="utf-8")
     (PUBLIC_DIR / "sitemap.xml").write_text(generate_sitemap(sorted_approved), encoding="utf-8")
+    (PUBLIC_DIR / "feed.xml").write_text(generate_rss(sorted_approved), encoding="utf-8")
     (PUBLIC_DIR / "CNAME").write_text("vtuber-matome.net", encoding="utf-8")
-    print(f"  ✅ robots.txt & sitemap.xml & CNAME")
+    print(f"  ✅ robots.txt & sitemap.xml & feed.xml & CNAME")
 
     print(f"\n生成完了！ 合計 {total_pages + len(sorted_approved) + 3} ファイル")
 
