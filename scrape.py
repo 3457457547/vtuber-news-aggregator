@@ -70,6 +70,12 @@ APPROVED_FILE = CACHE_DIR / "approved.json"
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 OPENAI_MODEL = "gpt-4o-mini"
 
+# Twitter/X API（オプション、未設定ならスキップ）
+TWITTER_CONSUMER_KEY = os.environ.get("TWITTER_CONSUMER_KEY", "")
+TWITTER_CONSUMER_SECRET = os.environ.get("TWITTER_CONSUMER_SECRET", "")
+TWITTER_ACCESS_TOKEN = os.environ.get("TWITTER_ACCESS_TOKEN", "")
+TWITTER_ACCESS_TOKEN_SECRET = os.environ.get("TWITTER_ACCESS_TOKEN_SECRET", "")
+
 # ============================================================
 # ユーティリティ
 # ============================================================
@@ -384,6 +390,123 @@ def generate_fallback_introduction(channel: dict) -> str:
 
 
 # ============================================================
+# Twitter/X API: 自動投稿
+# ============================================================
+
+def twitter_oauth_header(method: str, url: str, params: dict = None) -> str:
+    """OAuth 1.0a 署名付きAuthorizationヘッダーを生成"""
+    import hmac
+    import base64
+    import time
+    import uuid
+
+    if not all([TWITTER_CONSUMER_KEY, TWITTER_CONSUMER_SECRET,
+                TWITTER_ACCESS_TOKEN, TWITTER_ACCESS_TOKEN_SECRET]):
+        return ""
+
+    oauth_params = {
+        "oauth_consumer_key": TWITTER_CONSUMER_KEY,
+        "oauth_nonce": uuid.uuid4().hex,
+        "oauth_signature_method": "HMAC-SHA1",
+        "oauth_timestamp": str(int(time.time())),
+        "oauth_token": TWITTER_ACCESS_TOKEN,
+        "oauth_version": "1.0",
+    }
+
+    all_params = {**oauth_params}
+    if params:
+        all_params.update(params)
+
+    sorted_params = "&".join(
+        f"{quote(k, safe='')}={quote(str(v), safe='')}"
+        for k, v in sorted(all_params.items())
+    )
+
+    base_string = f"{method.upper()}&{quote(url, safe='')}&{quote(sorted_params, safe='')}"
+    signing_key = f"{quote(TWITTER_CONSUMER_SECRET, safe='')}&{quote(TWITTER_ACCESS_TOKEN_SECRET, safe='')}"
+
+    signature = base64.b64encode(
+        hmac.new(signing_key.encode(), base_string.encode(), "sha1").digest()
+    ).decode()
+
+    oauth_params["oauth_signature"] = signature
+
+    header = "OAuth " + ", ".join(
+        f'{quote(k, safe="")}="{quote(v, safe="")}"'
+        for k, v in sorted(oauth_params.items())
+    )
+    return header
+
+
+def post_tweet(text: str) -> bool:
+    """ツイートを投稿"""
+    if not TWITTER_CONSUMER_KEY:
+        print("[INFO] Twitter APIキー未設定、投稿スキップ")
+        return False
+
+    url = "https://api.twitter.com/2/tweets"
+    body = json.dumps({"text": text}).encode("utf-8")
+    auth_header = twitter_oauth_header("POST", url)
+
+    if not auth_header:
+        return False
+
+    req = Request(url, data=body, headers={
+        "Content-Type": "application/json",
+        "Authorization": auth_header,
+    })
+
+    try:
+        with urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+            tweet_id = result.get("data", {}).get("id", "")
+            print(f"  🐦 ツイート成功: https://x.com/i/status/{tweet_id}")
+            return True
+    except HTTPError as e:
+        error_body = e.read().decode("utf-8") if e.fp else ""
+        print(f"[ERROR] Twitter投稿失敗: {e.code} {error_body[:200]}")
+        return False
+    except Exception as e:
+        print(f"[ERROR] Twitter投稿エラー: {e}")
+        return False
+
+
+def tweet_new_vtuber(vtuber: dict):
+    """新人VTuber紹介ツイートを投稿"""
+    name = vtuber.get("title", "名前不明")
+    channel_id = vtuber.get("channel_id", "")
+    slug = channel_id_hash(channel_id)
+    page_url = f"{SITE_URL}/vtuber/{slug}.html"
+    channel_url = f"https://www.youtube.com/channel/{channel_id}"
+    sub_count = format_subscriber_count(vtuber.get("subscriber_count", 0))
+
+    intro = vtuber.get("introduction", "")
+    # 紹介文を1行に短縮（ツイート文字数制限対策）
+    short_intro = intro.split("\n")[0][:60] if intro else ""
+
+    tweet_text = f"""🌟 新人VTuber紹介！
+
+{name}さん（登録者{sub_count}）
+{short_intro}
+
+▶ チャンネル: {channel_url}
+📝 紹介ページ: {page_url}
+
+#新人VTuber #VTuber"""
+
+    # 280文字制限チェック（日本語は1文字=2カウント概算）
+    if len(tweet_text) > 280:
+        tweet_text = f"""🌟 {name}さんを紹介！
+
+▶ {channel_url}
+📝 {page_url}
+
+#新人VTuber #VTuber"""
+
+    post_tweet(tweet_text)
+
+
+# ============================================================
 # メインロジック: 候補収集
 # ============================================================
 
@@ -489,6 +612,9 @@ def approve_candidate(candidates: list, channel_id: str) -> tuple:
 
     save_json(APPROVED_FILE, approved)
     print(f"✅ {target['title']} を承認しました")
+
+    # 自動ツイート
+    tweet_new_vtuber(target)
 
     return remaining, target
 
