@@ -635,270 +635,321 @@ def auto_approve_from_spreadsheet():
 def render_css() -> str:
     """CSSを生成"""
     return """
+@import url('https://fonts.googleapis.com/css2?family=Zen+Maru+Gothic:wght@400;500;700;900&family=M+PLUS+Rounded+1c:wght@400;700;800&display=swap');
+
 :root {
-  --primary: #6C5CE7;
-  --primary-light: #A29BFE;
-  --accent: #FD79A8;
-  --accent-light: #FDCB6E;
-  --bg: #F8F9FA;
-  --card-bg: #FFFFFF;
-  --text: #2D3436;
-  --text-light: #636E72;
-  --border: #E9ECEF;
-  --shadow: 0 2px 12px rgba(0,0,0,0.08);
-  --shadow-hover: 0 8px 25px rgba(108,92,231,0.15);
-  --radius: 12px;
+  --bg: #0f1117;
+  --bg-nav: #161822;
+  --bg-card: #1a1d2e;
+  --bg-card-hover: #222640;
+  --text: #e4e6f0;
+  --text-sub: #8a8fa8;
+  --text-muted: #555a70;
+  --accent: #38bdf8;
+  --accent2: #a78bfa;
+  --accent3: #f472b6;
+  --border: rgba(255,255,255,0.07);
+  --glow: 0 0 20px rgba(56,189,248,0.12);
+  --radius: 14px;
 }
 
-* { margin: 0; padding: 0; box-sizing: border-box; }
+*{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth}
 
-body {
-  font-family: "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Segoe UI", sans-serif;
-  background: var(--bg);
-  color: var(--text);
-  line-height: 1.7;
-  min-height: 100vh;
-}
-
-/* ヘッダー */
-.header {
-  background: linear-gradient(135deg, var(--primary), #4834D4);
-  color: white;
-  padding: 2rem 1rem;
-  text-align: center;
-  position: relative;
-  overflow: hidden;
-}
-.header::before {
-  content: '';
-  position: absolute;
-  top: -50%;
-  left: -50%;
-  width: 200%;
-  height: 200%;
-  background: radial-gradient(circle, rgba(255,255,255,0.1) 0%, transparent 70%);
-  animation: pulse 4s ease-in-out infinite;
-}
-@keyframes pulse {
-  0%, 100% { transform: scale(1); opacity: 0.5; }
-  50% { transform: scale(1.1); opacity: 1; }
-}
-.header h1 {
-  font-size: 1.8rem;
-  position: relative;
-  z-index: 1;
-  text-shadow: 0 2px 4px rgba(0,0,0,0.2);
-}
-.header p {
-  font-size: 0.95rem;
-  opacity: 0.9;
-  margin-top: 0.5rem;
-  position: relative;
-  z-index: 1;
+body{
+  font-family:"Zen Maru Gothic","M PLUS Rounded 1c","Hiragino Kaku Gothic ProN",sans-serif;
+  background:var(--bg);
+  color:var(--text);
+  line-height:1.75;
+  min-height:100vh;
 }
 
-/* メインコンテンツ */
-.container {
-  max-width: 800px;
-  margin: 0 auto;
-  padding: 1.5rem 1rem;
+/* ===== HEADER ===== */
+.header{
+  position:relative;
+  padding:2.5rem 1.5rem 2rem;
+  text-align:center;
+  background:var(--bg-nav);
+  border-bottom:1px solid var(--border);
+  overflow:hidden;
+}
+.header::before{
+  content:'';
+  position:absolute;
+  inset:0;
+  background:
+    radial-gradient(ellipse 60% 50% at 20% 50%, rgba(167,139,250,0.10) 0%, transparent 70%),
+    radial-gradient(ellipse 50% 60% at 80% 50%, rgba(56,189,248,0.08) 0%, transparent 70%);
+  pointer-events:none;
+}
+.header h1{
+  font-family:"M PLUS Rounded 1c",sans-serif;
+  font-size:1.75rem;
+  font-weight:800;
+  position:relative;
+  background:linear-gradient(135deg, #38bdf8, #a78bfa, #f472b6);
+  -webkit-background-clip:text;
+  -webkit-text-fill-color:transparent;
+  background-clip:text;
+  letter-spacing:0.04em;
+}
+.header p{
+  font-size:0.85rem;
+  color:var(--text-sub);
+  margin-top:0.4rem;
+  position:relative;
+}
+.header-stats{
+  display:flex;
+  justify-content:center;
+  gap:1.5rem;
+  margin-top:1rem;
+  position:relative;
+}
+.header-stat{
+  font-size:0.75rem;
+  color:var(--text-muted);
+  display:flex;
+  align-items:center;
+  gap:0.3rem;
+}
+.header-stat strong{
+  color:var(--accent);
+  font-size:0.9rem;
 }
 
-/* セクションタイトル */
-.section-title {
-  font-size: 1.2rem;
-  color: var(--primary);
-  margin: 2rem 0 1rem;
-  padding-bottom: 0.5rem;
-  border-bottom: 2px solid var(--primary-light);
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
+/* ===== CONTAINER ===== */
+.container{
+  max-width:900px;
+  margin:0 auto;
+  padding:1.5rem 1rem;
 }
 
-/* VTuberカード */
-.vtuber-card {
-  background: var(--card-bg);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow);
-  padding: 1.2rem;
-  margin-bottom: 1rem;
-  transition: all 0.3s ease;
-  border: 1px solid var(--border);
-  animation: fadeInUp 0.5s ease both;
-}
-.vtuber-card:hover {
-  box-shadow: var(--shadow-hover);
-  transform: translateY(-2px);
-  border-color: var(--primary-light);
+/* ===== SECTION TITLE ===== */
+.section-title{
+  font-size:1rem;
+  color:var(--text-sub);
+  margin:1.5rem 0 1rem;
+  padding-bottom:0.6rem;
+  border-bottom:1px solid var(--border);
+  display:flex;
+  align-items:center;
+  gap:0.5rem;
+  font-weight:700;
+  letter-spacing:0.03em;
 }
 
-@keyframes fadeInUp {
-  from { opacity: 0; transform: translateY(20px); }
-  to { opacity: 1; transform: translateY(0); }
+/* ===== CARD GRID ===== */
+.card-grid{
+  display:grid;
+  grid-template-columns:repeat(auto-fill, minmax(260px, 1fr));
+  gap:1rem;
 }
 
-.card-header {
-  display: flex;
-  gap: 1rem;
-  align-items: flex-start;
+/* ===== VTUBER CARD ===== */
+.vtuber-card{
+  background:var(--bg-card);
+  border-radius:var(--radius);
+  padding:1.1rem;
+  border:1px solid var(--border);
+  transition:all 0.25s ease;
+  animation:cardIn 0.4s ease both;
+  position:relative;
+  overflow:hidden;
 }
-.card-thumbnail {
-  width: 64px;
-  height: 64px;
-  border-radius: 50%;
-  object-fit: cover;
-  border: 3px solid var(--primary-light);
-  flex-shrink: 0;
+.vtuber-card::before{
+  content:'';
+  position:absolute;
+  top:0;left:0;right:0;
+  height:3px;
+  background:linear-gradient(90deg, var(--accent), var(--accent2), var(--accent3));
+  opacity:0;
+  transition:opacity 0.25s;
 }
-.card-info {
-  flex: 1;
-  min-width: 0;
+.vtuber-card:hover{
+  background:var(--bg-card-hover);
+  border-color:rgba(167,139,250,0.25);
+  transform:translateY(-3px);
+  box-shadow:var(--glow);
 }
-.card-name {
-  font-size: 1.1rem;
-  font-weight: bold;
-  color: var(--text);
-  margin-bottom: 0.25rem;
-}
-.card-name a {
-  color: inherit;
-  text-decoration: none;
-}
-.card-name a:hover {
-  color: var(--primary);
-}
-.card-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  font-size: 0.8rem;
-  color: var(--text-light);
-  margin-bottom: 0.5rem;
-}
-.card-meta span {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.2rem;
-}
-.card-intro {
-  font-size: 0.9rem;
-  color: var(--text);
-  line-height: 1.8;
-  margin-top: 0.75rem;
-  padding-top: 0.75rem;
-  border-top: 1px solid var(--border);
+.vtuber-card:hover::before{opacity:1}
+
+@keyframes cardIn{
+  from{opacity:0;transform:translateY(16px)}
+  to{opacity:1;transform:translateY(0)}
 }
 
-/* 動画セクション */
-.card-videos {
-  margin-top: 0.75rem;
-  padding-top: 0.75rem;
-  border-top: 1px solid var(--border);
+.card-header{
+  display:flex;
+  gap:0.8rem;
+  align-items:center;
 }
-.card-videos-title {
-  font-size: 0.8rem;
-  color: var(--text-light);
-  margin-bottom: 0.5rem;
+.card-thumbnail{
+  width:52px;
+  height:52px;
+  border-radius:50%;
+  object-fit:cover;
+  border:2px solid var(--accent2);
+  flex-shrink:0;
+  transition:border-color 0.3s;
 }
-.video-link {
-  display: block;
-  font-size: 0.85rem;
-  color: var(--primary);
-  text-decoration: none;
-  padding: 0.3rem 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.vtuber-card:hover .card-thumbnail{
+  border-color:var(--accent);
 }
-.video-link:hover {
-  text-decoration: underline;
+.card-info{flex:1;min-width:0}
+.card-name{
+  font-size:0.95rem;
+  font-weight:700;
+  line-height:1.3;
+}
+.card-name a{
+  color:var(--text);
+  text-decoration:none;
+  transition:color 0.2s;
+}
+.card-name a:hover{color:var(--accent)}
+
+.card-meta{
+  display:flex;
+  flex-wrap:wrap;
+  gap:0.6rem;
+  font-size:0.72rem;
+  color:var(--text-muted);
+  margin-top:0.2rem;
+}
+.card-meta span{
+  display:inline-flex;
+  align-items:center;
+  gap:0.2rem;
 }
 
-/* CTAボタン */
-.card-cta {
-  display: inline-block;
-  margin-top: 0.75rem;
-  padding: 0.5rem 1.2rem;
-  background: linear-gradient(135deg, var(--accent), #E84393);
-  color: white;
-  border-radius: 2rem;
-  text-decoration: none;
-  font-size: 0.85rem;
-  font-weight: bold;
-  transition: all 0.3s ease;
-}
-.card-cta:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(253,121,168,0.4);
+.card-intro{
+  font-size:0.8rem;
+  color:var(--text-sub);
+  line-height:1.7;
+  margin-top:0.7rem;
+  padding-top:0.7rem;
+  border-top:1px solid var(--border);
+  display:-webkit-box;
+  -webkit-line-clamp:3;
+  -webkit-box-orient:vertical;
+  overflow:hidden;
 }
 
-/* 広告プレースホルダー */
-.ad-space {
-  background: linear-gradient(135deg, #FFF3E0, #FFE0B2);
-  border: 1px dashed #FFB74D;
-  border-radius: var(--radius);
-  padding: 1.5rem;
-  margin: 1.5rem 0;
-  text-align: center;
-  color: #F57C00;
-  font-size: 0.8rem;
+/* ===== VIDEOS ===== */
+.card-videos{
+  margin-top:0.6rem;
+  padding-top:0.6rem;
+  border-top:1px solid var(--border);
+}
+.card-videos-title{
+  font-size:0.7rem;
+  color:var(--text-muted);
+  margin-bottom:0.3rem;
+  text-transform:uppercase;
+  letter-spacing:0.06em;
+}
+.video-link{
+  display:block;
+  font-size:0.78rem;
+  color:var(--accent);
+  text-decoration:none;
+  padding:0.2rem 0;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  transition:color 0.2s;
+}
+.video-link:hover{color:var(--accent3)}
+
+/* ===== CTA BUTTON ===== */
+.card-cta{
+  display:inline-flex;
+  align-items:center;
+  gap:0.3rem;
+  margin-top:0.7rem;
+  padding:0.4rem 1rem;
+  background:transparent;
+  color:var(--accent);
+  border:1px solid var(--accent);
+  border-radius:2rem;
+  text-decoration:none;
+  font-size:0.78rem;
+  font-weight:700;
+  transition:all 0.25s;
+  letter-spacing:0.02em;
+}
+.card-cta:hover{
+  background:var(--accent);
+  color:var(--bg);
+  box-shadow:0 0 16px rgba(56,189,248,0.3);
 }
 
-/* ページネーション */
-.pagination {
-  display: flex;
-  justify-content: center;
-  gap: 0.5rem;
-  margin: 2rem 0;
-}
-.pagination a, .pagination span {
-  display: inline-block;
-  padding: 0.5rem 1rem;
-  border-radius: var(--radius);
-  text-decoration: none;
-  font-size: 0.9rem;
-  border: 1px solid var(--border);
-}
-.pagination a {
-  color: var(--primary);
-  background: white;
-}
-.pagination a:hover {
-  background: var(--primary);
-  color: white;
-}
-.pagination .current {
-  background: var(--primary);
-  color: white;
-  border-color: var(--primary);
+/* ===== AD SPACE ===== */
+.ad-space{
+  background:var(--bg-card);
+  border:1px dashed var(--text-muted);
+  border-radius:var(--radius);
+  padding:1.2rem;
+  margin:1.2rem 0;
+  text-align:center;
+  color:var(--text-muted);
+  font-size:0.75rem;
+  grid-column:1/-1;
 }
 
-/* フッター */
-.footer {
-  background: linear-gradient(135deg, #2D3436, #636E72);
-  color: white;
-  text-align: center;
-  padding: 1.5rem 1rem;
-  margin-top: 3rem;
-  font-size: 0.8rem;
+/* ===== PAGINATION ===== */
+.pagination{
+  display:flex;
+  justify-content:center;
+  gap:0.4rem;
+  margin:2rem 0;
 }
-.footer a { color: var(--primary-light); text-decoration: none; }
-.footer a:hover { text-decoration: underline; }
-
-/* 空状態 */
-.empty-state {
-  text-align: center;
-  padding: 3rem 1rem;
-  color: var(--text-light);
+.pagination a,.pagination span{
+  display:inline-block;
+  padding:0.4rem 0.9rem;
+  border-radius:8px;
+  text-decoration:none;
+  font-size:0.85rem;
+  border:1px solid var(--border);
+  transition:all 0.2s;
 }
-.empty-state .emoji { font-size: 3rem; margin-bottom: 1rem; }
+.pagination a{color:var(--text-sub);background:var(--bg-card)}
+.pagination a:hover{border-color:var(--accent);color:var(--accent)}
+.pagination .current{
+  background:var(--accent);
+  color:var(--bg);
+  border-color:var(--accent);
+}
 
-/* レスポンシブ */
-@media (max-width: 600px) {
-  .header h1 { font-size: 1.4rem; }
-  .card-thumbnail { width: 48px; height: 48px; }
-  .card-meta { font-size: 0.75rem; }
+/* ===== FOOTER ===== */
+.footer{
+  background:var(--bg-nav);
+  border-top:1px solid var(--border);
+  color:var(--text-muted);
+  text-align:center;
+  padding:1.5rem 1rem;
+  margin-top:3rem;
+  font-size:0.75rem;
+}
+.footer a{color:var(--accent);text-decoration:none}
+.footer a:hover{text-decoration:underline}
+
+/* ===== EMPTY STATE ===== */
+.empty-state{
+  text-align:center;
+  padding:3rem 1rem;
+  color:var(--text-muted);
+  grid-column:1/-1;
+}
+.empty-state .emoji{font-size:3rem;margin-bottom:1rem}
+
+/* ===== RESPONSIVE ===== */
+@media(max-width:600px){
+  .header h1{font-size:1.4rem}
+  .card-grid{grid-template-columns:1fr}
+  .card-thumbnail{width:44px;height:44px}
+  .header-stats{gap:0.8rem}
 }
 """.strip()
 
@@ -936,12 +987,16 @@ def render_head(title: str, description: str, url: str = "", og_image: str = "")
 </head>"""
 
 
-def render_header() -> str:
+def render_header(total_count: int = 0) -> str:
     """サイトヘッダーを生成"""
     return f"""
 <header class="header">
   <h1>{SITE_NAME}</h1>
   <p>{SITE_TAGLINE}</p>
+  <div class="header-stats">
+    <div class="header-stat">紹介済み <strong>{total_count}</strong> 人</div>
+    <div class="header-stat">毎日更新</div>
+  </div>
 </header>"""
 
 
@@ -1062,7 +1117,7 @@ def generate_index_page(approved: list, page: int, total_pages: int) -> str:
     for i, vtuber in enumerate(page_items):
         cards_html += render_vtuber_card(vtuber, i)
         # 5件ごとに広告
-        if (i + 1) % 5 == 0 and i < len(page_items) - 1:
+        if (i + 1) % 6 == 0 and i < len(page_items) - 1:
             cards_html += render_ad_space()
 
     if not page_items:
@@ -1077,10 +1132,12 @@ def generate_index_page(approved: list, page: int, total_pages: int) -> str:
 
     return f"""{render_head(title, description, page_url)}
 <body>
-  {render_header()}
+  {render_header(len(approved))}
   <main class="container">
-    <div class="section-title">✨ 新人VTuber紹介（{len(approved)}人）</div>
-    {cards_html}
+    <div class="section-title">NEW FACES — 新人VTuber紹介（{len(approved)}人）</div>
+    <div class="card-grid">
+      {cards_html}
+    </div>
     {render_pagination(page, total_pages)}
   </main>
   {render_footer()}
@@ -1132,7 +1189,7 @@ def generate_vtuber_page(vtuber: dict) -> str:
 <body>
   {render_header()}
   <main class="container">
-    <a href="/" style="display:inline-block;margin-bottom:1rem;color:var(--primary);text-decoration:none;">← トップに戻る</a>
+    <a href="/" style="display:inline-block;margin-bottom:1rem;color:var(--accent);text-decoration:none;font-size:0.85rem;">← トップに戻る</a>
 
     <article class="vtuber-card" style="animation-delay:0s">
       <div class="card-header">
